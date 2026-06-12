@@ -64,5 +64,9 @@
   "ai_thinking": "⏳ O'ylayapman...",
   "ai_error": "❌ Xatolik yuz berdi. Qaytadan urinib ko'ring.",
   "ai_no_key": "🤖 AI Assistant hozircha sozlanmagan. Admin bilan bog'laning: {contact}",
-  "ai_exited": "✅ AI Assistant'dan chiqdingiz."
+  "ai_exited": "✅ AI Assistant'dan chiqdingiz.",
+  "sub_required": "⚠️ <b>Botdan foydalanish uchun quyidagi kanallarga obuna bo'ling:</b>\n\nObuna bo'lgach «✅ Tekshirish» tugmasini bosing 👇",
+  "sub_check_btn": "✅ Tekshirish",
+  "sub_ok": "✅ Rahmat! Obuna tasdiqlandi.",
+  "sub_not_yet": "❌ Hali hamma kanallarga obuna bo'lmadingiz!"
 }

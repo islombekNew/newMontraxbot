@@ -4,6 +4,7 @@ const { Telegraf, Markup } = require('telegraf');
 const db = require('./src/db');
 const state = require('./src/state');
 const { t } = require('./src/i18n');
+const { subscriptionMiddleware, registerSubscription } = require('./src/subscription');
 const services = require('./src/services');
 const shop = require('./src/shop');
 const profile = require('./src/profile');
@@ -17,13 +18,13 @@ if (!process.env.BOT_TOKEN || !process.env.ADMIN_ID) {
 
 const bot = new Telegraf(process.env.BOT_TOKEN);
 
-/* ===== Til olish (user tili yoki default uz) ===== */
+/* ===== Til olish ===== */
 async function getLang(ctx) {
   const user = await db.getUser(ctx.from.id);
   return (user && user.lang) || 'uz';
 }
 
-/* ===== Asosiy menyu (rasmdagidek 15 ta tugma) ===== */
+/* ===== Asosiy menyu ===== */
 function mainMenuKeyboard(lang) {
   const k = (key) => t(lang, key);
   return Markup.keyboard([
@@ -42,6 +43,24 @@ async function sendMainMenu(ctx, lang) {
   await ctx.reply(t(lang, 'main_menu'), mainMenuKeyboard(lang));
 }
 
+/* ===== Xush kelibsiz: admin mockup saqlagan bo'lsa copyMessage
+   (premium emojilar harakatli holda ko'rinadi!), bo'lmasa default ===== */
+async function sendWelcome(ctx, lang) {
+  const s = await db.getSettings();
+  if (s.welcomeMsg && s.welcomeMsg.chatId && s.welcomeMsg.messageId) {
+    try {
+      await ctx.telegram.copyMessage(ctx.chat.id, s.welcomeMsg.chatId, s.welcomeMsg.messageId);
+      return sendMainMenu(ctx, lang);
+    } catch (err) {
+      console.error('welcomeMsg copy xato:', err.message);
+    }
+  }
+  await ctx.reply(
+    t(lang, 'start_welcome', { name: ctx.from.first_name || '' }),
+    { parse_mode: 'HTML', ...mainMenuKeyboard(lang) }
+  );
+}
+
 /* ===== Middleware: userni ro'yxatga olish ===== */
 bot.use(async (ctx, next) => {
   if (ctx.from && !ctx.from.is_bot) {
@@ -50,8 +69,20 @@ bot.use(async (ctx, next) => {
   return next();
 });
 
+/* ===== Middleware: majburiy obuna ===== */
+bot.use(subscriptionMiddleware(getLang));
+
+/* ===== "Tekshirish" tugmasi: obuna OK bo'lgach davom etish ===== */
+registerSubscription(bot, getLang, async (ctx) => {
+  const user = await db.getUser(ctx.from.id);
+  if (!user || !user.lang) {
+    return ctx.reply(t('uz', 'choose_lang'), profile.langKeyboard());
+  }
+  await sendWelcome(ctx, user.lang);
+});
+
 /* ===== Modullarni ulash ===== */
-admin.registerAdmin(bot);
+admin.registerAdmin(bot, sendMainMenu);
 services.registerServices(bot, getLang);
 shop.registerShop(bot, getLang);
 profile.registerProfile(bot, getLang, sendMainMenu);
@@ -78,16 +109,10 @@ bot.start(async (ctx) => {
     }
   }
 
-  // Til tanlanmagan bo'lsa avval til so'raladi
   if (!user.lang) {
     return ctx.reply(t('uz', 'choose_lang'), profile.langKeyboard());
   }
-
-  const lang = user.lang;
-  await ctx.reply(
-    t(lang, 'start_welcome', { name: ctx.from.first_name || '' }),
-    { parse_mode: 'HTML', ...mainMenuKeyboard(lang) }
-  );
+  await sendWelcome(ctx, user.lang);
 });
 
 /* ===== Markaziy matn router ===== */
@@ -102,19 +127,20 @@ bot.on('text', async (ctx) => {
   if (s.action === 'ai:chat') return ai.handleText(ctx, s, lang);
 });
 
-/* ===== Markaziy rasm router ===== */
-bot.on('photo', async (ctx) => {
+/* ===== Media routerlar (rasm/video/animatsiya/stiker) ===== */
+const mediaHandler = async (ctx) => {
   const s = state.get(ctx.from.id);
   if (!s) return;
-  const lang = await getLang(ctx);
-  if (s.action === 'shop:photo') return shop.handlePhoto(ctx, s, lang);
   if (s.action.startsWith('admin:') && admin.isAdmin(ctx)) return admin.handleMedia(ctx, s);
-});
-
-bot.on('video', async (ctx) => {
-  const s = state.get(ctx.from.id);
-  if (s && s.action.startsWith('admin:') && admin.isAdmin(ctx)) return admin.handleMedia(ctx, s);
-});
+  if (s.action === 'shop:photo' && ctx.message.photo) {
+    const lang = await getLang(ctx);
+    return shop.handlePhoto(ctx, s, lang);
+  }
+};
+bot.on('photo', mediaHandler);
+bot.on('video', mediaHandler);
+bot.on('animation', mediaHandler);
+bot.on('sticker', mediaHandler);
 
 /* ===== Global xatolik ===== */
 bot.catch((err, ctx) => {
@@ -122,7 +148,7 @@ bot.catch((err, ctx) => {
 });
 
 /* ===== Ishga tushirish ===== */
-bot.launch().then(() => console.log('\u2705 MONTRAX bot ishga tushdi!'));
+bot.launch(() => console.log('\u2705 MONTRAX bot ishga tushdi!'));
 
 process.once('SIGINT', () => bot.stop('SIGINT'));
 process.once('SIGTERM', () => bot.stop('SIGTERM'));

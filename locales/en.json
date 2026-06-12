@@ -64,5 +64,9 @@
   "ai_thinking": "⏳ Thinking...",
   "ai_error": "❌ An error occurred. Please try again.",
   "ai_no_key": "🤖 AI Assistant is not configured yet. Contact admin: {contact}",
-  "ai_exited": "✅ You left the AI Assistant."
+  "ai_exited": "✅ You left the AI Assistant.",
+  "sub_required": "⚠️ <b>To use the bot, subscribe to these channels:</b>\n\nAfter subscribing press «✅ Check» 👇",
+  "sub_check_btn": "✅ Check",
+  "sub_ok": "✅ Thank you! Subscription confirmed.",
+  "sub_not_yet": "❌ You haven't subscribed to all channels yet!"
 }
