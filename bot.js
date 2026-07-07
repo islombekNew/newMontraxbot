@@ -4,15 +4,18 @@ const { Telegraf, Markup } = require('telegraf');
 const db = require('./src/db');
 const state = require('./src/state');
 const { t } = require('./src/i18n');
+const { ADMIN_IDS } = require('./src/config');
 const { subscriptionMiddleware, registerSubscription } = require('./src/subscription');
+const { sendTpl } = require('./src/templates');
 const services = require('./src/services');
 const shop = require('./src/shop');
 const profile = require('./src/profile');
 const ai = require('./src/ai');
 const admin = require('./src/admin');
+const extras = require('./src/extras');
 
-if (!process.env.BOT_TOKEN || !process.env.ADMIN_ID) {
-    console.error('\u274c .env faylida BOT_TOKEN va ADMIN_ID bo\u2018lishi shart!');
+if (!process.env.BOT_TOKEN || !ADMIN_IDS.length) {
+    console.error('❌ .env faylida BOT_TOKEN va ADMIN_ID (yoki ADMIN_IDS=1,2) bo‘lishi shart!');
     process.exit(1);
 }
 
@@ -31,6 +34,7 @@ function mainMenuKeyboard(lang) {
         [k('menu_frontend'), k('menu_design')],
         [k('menu_backend'), k('menu_mobile')],
         [k('menu_uiux'), k('menu_smm')],
+        [k('menu_portfolio'), k('menu_faq')],
         [k('menu_stars'), k('menu_premium')],
         [k('menu_gift'), k('menu_referral')],
         [k('menu_orders'), k('menu_profile')],
@@ -43,22 +47,15 @@ async function sendMainMenu(ctx, lang) {
     await ctx.reply(t(lang, 'main_menu'), mainMenuKeyboard(lang));
 }
 
-/* ===== Xush kelibsiz: admin mockup saqlagan bo'lsa copyMessage
-   (premium emojilar harakatli holda ko'rinadi!), bo'lmasa default ===== */
+/* ===== Xush kelibsiz: admin mockup saqlagan bo'lsa FORWARD
+   (premium emojilar harakatli ko'rinadi!), bo'lmasa default ===== */
 async function sendWelcome(ctx, lang) {
-    const s = await db.getSettings();
-    if (s.welcomeMsg && s.welcomeMsg.chatId && s.welcomeMsg.messageId) {
-        try {
-            // FORWARD: premium emojilar harakatli saqlanadi (copy'da yo'qoladi)
-            await ctx.telegram.forwardMessage(ctx.chat.id, s.welcomeMsg.chatId, s.welcomeMsg.messageId);
-            return sendMainMenu(ctx, lang);
-        } catch (err) {
-            console.error('welcomeMsg forward xato:', err.message);
-        }
-    }
-    await ctx.reply(
-        t(lang, 'start_welcome', { name: ctx.from.first_name || '' }), { parse_mode: 'HTML', ...mainMenuKeyboard(lang) }
-    );
+    await sendTpl(ctx, 'welcome',
+        t(lang, 'start_welcome', { name: ctx.from.first_name || '' }), {
+            parse_mode: 'HTML',
+            followText: t(lang, 'main_menu'),
+            ...mainMenuKeyboard(lang),
+        });
 }
 
 /* ===== Middleware: userni ro'yxatga olish ===== */
@@ -87,6 +84,7 @@ services.registerServices(bot, getLang);
 shop.registerShop(bot, getLang);
 profile.registerProfile(bot, getLang, sendMainMenu);
 ai.registerAI(bot, getLang, sendMainMenu);
+extras.registerExtras(bot, getLang);
 
 /* ===== /start (referal payload bilan) ===== */
 bot.start(async(ctx) => {
@@ -105,6 +103,14 @@ bot.start(async(ctx) => {
                     referrerId,
                     t(rLang, 'referral_joined', { count: referrer.referrals })
                 ).catch(() => {});
+                // Har 5 ta referalda bonus xabari (5% chegirma, maks 20%)
+                if (referrer.referrals % 5 === 0) {
+                    const discount = profile.discountFor(referrer.referrals);
+                    await ctx.telegram.sendMessage(
+                        referrerId,
+                        t(rLang, 'ref_bonus', { count: referrer.referrals, discount }), { parse_mode: 'HTML' }
+                    ).catch(() => {});
+                }
             }
         }
     }
@@ -118,8 +124,13 @@ bot.start(async(ctx) => {
 /* ===== Markaziy matn router ===== */
 bot.on('text', async(ctx) => {
     const s = state.get(ctx.from.id);
-    if (!s) return;
     const lang = await getLang(ctx);
+
+    if (!s) {
+        // Hech qanday flow'da emas — jim qolmasdan menyuni ko'rsatamiz
+        if (ctx.message.text.startsWith('/')) return;
+        return ctx.reply(t(lang, 'resume_hint'), mainMenuKeyboard(lang));
+    }
 
     if (s.action.startsWith('admin:') && admin.isAdmin(ctx)) return admin.handleText(ctx, s);
     if (s.action.startsWith('order:')) return services.handleText(ctx, s, lang);
@@ -144,14 +155,31 @@ bot.on('sticker', mediaHandler);
 
 /* ===== Global xatolik ===== */
 bot.catch((err, ctx) => {
-    console.error('\u274c Bot xatosi:', err.message, '| update:', ctx.updateType);
+    console.error('❌ Bot xatosi:', err.message, '| update:', ctx.updateType);
+    // User jim qolmasin
+    if (ctx.chat && ctx.chat.type === 'private') {
+        ctx.reply(t('uz', 'err_generic')).catch(() => {});
+    }
 });
+
+/* ===== Kunlik hisobot: har kuni 21:00 da adminlarga ===== */
+function scheduleDailyReport() {
+    const now = new Date();
+    const next = new Date(now);
+    next.setHours(21, 0, 0, 0);
+    if (next <= now) next.setDate(next.getDate() + 1);
+    setTimeout(async() => {
+        await admin.sendDailyReport(bot.telegram).catch((e) => console.error('Hisobot xato:', e.message));
+        scheduleDailyReport();
+    }, next - now);
+}
+scheduleDailyReport();
 
 /* ===== Ishga tushirish ===== */
 // Eski webhook va yig'ilib qolgan update'larni tozalab (xavfsizlik),
 // faqat shu jarayon polling qilishini ta'minlaymiz
 bot.launch({ dropPendingUpdates: true }, () =>
-    console.log('\u2705 MONTRAX bot ishga tushdi!')
+    console.log('✅ MONTRAX bot ishga tushdi!')
 );
 
 process.once('SIGINT', () => bot.stop('SIGINT'));

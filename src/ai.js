@@ -2,25 +2,45 @@ const { Markup } = require('telegraf');
 const db = require('./db');
 const state = require('./state');
 const { t, allLangs } = require('./i18n');
+const { sendTpl } = require('./templates');
 
 const GEMINI_URL =
   'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent';
+
+// Rate limit: API kvotasini bitta user yeb qo'ymasligi uchun
+const RATE_PER_MIN = 4;
+const RATE_PER_DAY = 40;
+const usage = new Map(); // userId -> { stamps: [ts], day: 'YYYY-MM-DD', count }
+
+function checkRate(userId) {
+  const now = Date.now();
+  const today = new Date().toISOString().slice(0, 10);
+  let u = usage.get(userId);
+  if (!u || u.day !== today) u = { stamps: [], day: today, count: 0 };
+  u.stamps = u.stamps.filter((ts) => now - ts < 60000);
+  if (u.count >= RATE_PER_DAY) { usage.set(userId, u); return 'day'; }
+  if (u.stamps.length >= RATE_PER_MIN) { usage.set(userId, u); return 'min'; }
+  u.stamps.push(now);
+  u.count++;
+  usage.set(userId, u);
+  return null;
+}
 
 // Sodda, faqat MONTRAX yo'nalishiga mos yordamchi
 const SYSTEM_PROMPT = [
   'Sen MONTRAX kompaniyasining sodda va samimiy yordamchisisan.',
   'MONTRAX xizmatlari: Front-end (saytlar, React), Back-end (Node.js, API, Telegram botlar),',
   'Grafik dizayn (logo, banner, post), UI/UX dizayn (Figma), Mobil ilovalar (React Native),',
-  'SMM va Reklama. Bundan tashqari botda Telegram Stars, Premium va sovg\u2018alar sotiladi.',
+  'SMM va Reklama. Bundan tashqari botda Telegram Stars, Premium va sovg‘alar sotiladi.',
   '',
   'QOIDALAR:',
-  '1. FAQAT shu mavzulardagi savollarga javob ber. Boshqa mavzu so\u2018ralsa, muloyimlik bilan',
-  '   "Men faqat MONTRAX xizmatlari bo\u2018yicha yordam bera olaman" deb ayt.',
-  '2. Javoblar QISQA bo\u2018lsin \u2014 2-4 jumla, sodda til.',
-  '3. Har javobda 1-3 ta mos emoji ishlat (\ud83d\ude0a \ud83d\ude80 \ud83d\udcbb \ud83c\udfa8 \u2705 kabi).',
-  '4. Aniq narx so\u2018ralsa: botdagi tegishli bo\u2018limga qarashni yoki admin bilan bog\u2018lanishni ayt.',
-  '5. Buyurtma bermoqchi bo\u2018lsa: menyudan kerakli xizmatni tanlab "Buyurtma berish" tugmasini bosishni ayt.',
-  '6. Foydalanuvchi qaysi tilda yozsa (o\u2018zbek/rus/ingliz), o\u2018sha tilda javob ber.',
+  '1. FAQAT shu mavzulardagi savollarga javob ber. Boshqa mavzu so‘ralsa, muloyimlik bilan',
+  '   "Men faqat MONTRAX xizmatlari bo‘yicha yordam bera olaman" deb ayt.',
+  '2. Javoblar QISQA bo‘lsin — 2-4 jumla, sodda til.',
+  '3. Har javobda 1-3 ta mos emoji ishlat (😊 🚀 💻 🎨 ✅ kabi).',
+  '4. Aniq narx so‘ralsa: botdagi tegishli bo‘limga qarashni yoki admin bilan bog‘lanishni ayt.',
+  '5. Buyurtma bermoqchi bo‘lsa: menyudan kerakli xizmatni tanlab "Buyurtma berish" tugmasini bosishni ayt.',
+  '6. Foydalanuvchi qaysi tilda yozsa (o‘zbek/rus/ingliz), o‘sha tilda javob ber.',
 ].join('\n');
 
 async function askGemini(history) {
@@ -45,7 +65,7 @@ async function askGemini(history) {
     data.candidates[0].content &&
     data.candidates[0].content.parts &&
     data.candidates[0].content.parts.map((p) => p.text).join('');
-  if (!text) throw new Error('Gemini bo\u2018sh javob');
+  if (!text) throw new Error('Gemini bo‘sh javob');
   return text.trim();
 }
 
@@ -57,7 +77,7 @@ function registerAI(bot, getLang, sendMainMenu) {
       return ctx.reply(t(lang, 'ai_no_key', { contact: s.contact.telegram }));
     }
     state.set(ctx.from.id, { action: 'ai:chat', data: { history: [] } });
-    await ctx.reply(t(lang, 'ai_intro'), {
+    await sendTpl(ctx, 'ai_intro', t(lang, 'ai_intro'), {
       parse_mode: 'HTML',
       ...Markup.keyboard([[t(lang, 'ai_exit_btn')]]).resize(),
     });
@@ -73,6 +93,10 @@ function registerAI(bot, getLang, sendMainMenu) {
 
 async function handleText(ctx, s, lang) {
   if (s.action !== 'ai:chat') return;
+
+  const limited = checkRate(ctx.from.id);
+  if (limited === 'min') return ctx.reply(t(lang, 'ai_limit'));
+  if (limited === 'day') return ctx.reply(t(lang, 'ai_day_limit'));
 
   s.data.history.push({ role: 'user', text: ctx.message.text });
   s.data.history = s.data.history.slice(-8); // qisqa kontekst

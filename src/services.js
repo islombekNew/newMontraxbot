@@ -2,14 +2,19 @@ const { Markup } = require('telegraf');
 const db = require('./db');
 const state = require('./state');
 const { t, allLangs } = require('./i18n');
+const { ADMIN_IDS } = require('./config');
+const { sendTpl } = require('./templates');
 
 // Xizmat kaliti -> menu/desc kalitlari
 const SERVICES = ['frontend', 'design', 'backend', 'mobile', 'uiux', 'smm'];
+
+const MIN_DESC_LEN = 10;
 
 function registerServices(bot, getLang) {
   // Har bir xizmat tugmasi (3 tildagi variantlari bilan)
   for (const svc of SERVICES) {
     bot.hears(allLangs('menu_' + svc), async (ctx) => {
+      state.clear(ctx.from.id); // oldingi yarim flow'ni bekor qilamiz
       const lang = await getLang(ctx);
       const settings = await db.getSettings();
       const price = settings.servicePrices[svc] || '';
@@ -53,11 +58,10 @@ function registerServices(bot, getLang) {
     state.clear(ctx.from.id);
 
     await ctx.editMessageReplyMarkup().catch(() => {});
-    await ctx.reply(t(lang, 'order_sent', { id: order.id }), { parse_mode: 'HTML' });
+    await sendTpl(ctx, 'order_done', t(lang, 'order_sent', { id: order.id }), { parse_mode: 'HTML' });
 
-    // Adminga xabar
-    const adminId = Number(process.env.ADMIN_ID);
-    await ctx.telegram.sendMessage(adminId,
+    // Barcha adminlarga xabar
+    const adminMsg =
       '🆕 <b>YANGI BUYURTMA</b> <code>#' + order.id + '</code>\n\n' +
       '🔧 Xizmat: ' + t('uz', 'menu_' + order.service) + '\n' +
       '👤 User: ' + (order.username ? '@' + order.username : ctx.from.first_name) +
@@ -65,17 +69,17 @@ function registerServices(bot, getLang) {
       '📝 ' + order.description + '\n' +
       '💰 Byudjet: ' + order.budget + '\n' +
       '⏳ Muddat: ' + order.deadline + '\n' +
-      '📞 Tel: ' + order.phone,
-      {
-        parse_mode: 'HTML',
-        ...Markup.inlineKeyboard([
-          [
-            Markup.button.callback('✅ Qabul qilish', 'adm:ord:accepted:' + order.id),
-            Markup.button.callback('❌ Rad etish', 'adm:ord:rejected:' + order.id),
-          ],
-        ]),
-      }
-    ).catch((e) => console.error('Adminga order yuborilmadi:', e.message));
+      '📞 Tel: ' + order.phone;
+    const kb = Markup.inlineKeyboard([
+      [
+        Markup.button.callback('✅ Qabul qilish', 'adm:ord:accepted:' + order.id),
+        Markup.button.callback('❌ Rad etish', 'adm:ord:rejected:' + order.id),
+      ],
+    ]);
+    for (const adminId of ADMIN_IDS) {
+      await ctx.telegram.sendMessage(adminId, adminMsg, { parse_mode: 'HTML', ...kb })
+        .catch((e) => console.error('Adminga order yuborilmadi (' + adminId + '):', e.message));
+    }
   });
 
   bot.action('order:cancel', async (ctx) => {
@@ -87,6 +91,12 @@ function registerServices(bot, getLang) {
   });
 }
 
+// Telefon: +998901234567, 998901234567, 901234567 (bo'shliq/tire/qavslar olib tashlanadi)
+function isValidPhone(text) {
+  const cleaned = text.replace(/[\s\-()]/g, '');
+  return /^\+?\d{9,15}$/.test(cleaned);
+}
+
 // Matnli qadamlar
 async function handleText(ctx, s, lang) {
   const text = ctx.message.text.trim();
@@ -94,6 +104,9 @@ async function handleText(ctx, s, lang) {
 
   switch (s.action) {
     case 'order:desc':
+      if (text.length < MIN_DESC_LEN) {
+        return ctx.reply(t(lang, 'err_short', { min: MIN_DESC_LEN }));
+      }
       d.description = text;
       s.action = 'order:budget';
       return ctx.reply(t(lang, 'order_budget_ask'));
@@ -106,6 +119,9 @@ async function handleText(ctx, s, lang) {
       s.action = 'order:phone';
       return ctx.reply(t(lang, 'order_phone_ask'));
     case 'order:phone': {
+      if (!isValidPhone(text)) {
+        return ctx.reply(t(lang, 'err_phone'));
+      }
       d.phone = text;
       s.action = 'order:confirm';
       return ctx.reply(

@@ -1,6 +1,9 @@
 # env fayl
 .env
 
+# ma'lumotlar (userlar, to'lovlar, sozlamalar — maxfiy!)
+data/
+
 # dependencies
 node_modules
 

@@ -36,11 +36,11 @@ const DEFAULTS = {
             { months: 12, price: 400000 },
         ],
         gifts: [
-            { name: '\ud83e\uddf8 Ayiqcha', price: 20000 },
-            { name: '\ud83d\udc9d Yurak', price: 20000 },
-            { name: '\ud83c\udf39 Atirgul', price: 30000 },
-            { name: '\ud83c\udf82 Tort', price: 50000 },
-            { name: '\ud83d\udc8e Olmos', price: 100000 },
+            { name: '🧸 Ayiqcha', price: 20000 },
+            { name: '💝 Yurak', price: 20000 },
+            { name: '🌹 Atirgul', price: 30000 },
+            { name: '🎂 Tort', price: 50000 },
+            { name: '💎 Olmos', price: 100000 },
         ],
         channels: [
             { username: '@sabr_hikoyasi', title: 'Sabr Hikoyasi' },
@@ -48,9 +48,14 @@ const DEFAULTS = {
         ],
         welcomeMsg: null,
         subMsg: null,
+        templates: {},
+        portfolio: [],
+        faq: [],
     },
 };
 
+// Xotira keshi: har update'da faylni diskdan qayta o'qimaslik uchun
+const cache = new Map();
 // Yozish navbati (race condition oldini olish)
 const queues = new Map();
 
@@ -61,25 +66,36 @@ function enqueue(file, task) {
     return next;
 }
 
-async function readFile(file) {
-    try {
-        return JSON.parse(await fs.readFile(path.join(DATA_DIR, file), 'utf8'));
-    } catch (err) {
-        if (err.code === 'ENOENT') {
-            const def = JSON.parse(JSON.stringify(DEFAULTS[file]));
-            await writeFile(file, def);
-            return def;
-        }
-        throw err;
-    }
-}
-
 async function writeFile(file, data) {
     await fs.mkdir(DATA_DIR, { recursive: true });
     const fp = path.join(DATA_DIR, file);
     const tmp = fp + '.tmp';
     await fs.writeFile(tmp, JSON.stringify(data, null, 2), 'utf8');
     await fs.rename(tmp, fp); // atomik
+}
+
+// Eski settings.json da yangi maydonlar bo'lmasa — default bilan to'ldirish
+function ensureSettingsShape(s) {
+    const def = DEFAULTS['settings.json'];
+    for (const key of Object.keys(def)) {
+        if (s[key] === undefined) s[key] = JSON.parse(JSON.stringify(def[key]));
+    }
+    return s;
+}
+
+async function readFile(file) {
+    if (cache.has(file)) return cache.get(file);
+    let data;
+    try {
+        data = JSON.parse(await fs.readFile(path.join(DATA_DIR, file), 'utf8'));
+    } catch (err) {
+        if (err.code !== 'ENOENT') throw err;
+        data = JSON.parse(JSON.stringify(DEFAULTS[file]));
+        await writeFile(file, data);
+    }
+    if (file === 'settings.json') ensureSettingsShape(data);
+    cache.set(file, data);
+    return data;
 }
 
 function updateFile(file, mutator) {
@@ -105,26 +121,41 @@ async function getUser(id) {
     return users.find((u) => u.id === Number(id)) || null;
 }
 
-// Yangi user bo'lsa { user, isNew: true } qaytaradi
-function upsertUser(from) {
-    return updateFile('users.json', (users) => {
-        let user = users.find((u) => u.id === from.id);
-        if (!user) {
-            user = {
-                id: from.id,
-                username: from.username || '',
-                firstName: from.first_name || '',
-                lang: null, // birinchi /start da tanlanadi
-                referrals: 0,
-                referredBy: null,
-                joinedAt: new Date().toISOString(),
-            };
-            users.push(user);
-            return { user, isNew: true };
+// Yangi user bo'lsa { user, isNew: true } qaytaradi.
+// Hech narsa o'zgarmagan bo'lsa diskka YOZMAYDI (har update'da yozish sekin edi).
+async function upsertUser(from) {
+    const users = await readFile('users.json');
+    const existing = users.find((u) => u.id === from.id);
+    if (existing) {
+        const username = from.username || existing.username;
+        const firstName = from.first_name || existing.firstName;
+        if (username === existing.username && firstName === existing.firstName && !existing.blocked) {
+            return { user: existing, isNew: false };
         }
-        user.username = from.username || user.username;
-        user.firstName = from.first_name || user.firstName;
-        return { user, isNew: false };
+        return updateFile('users.json', (list) => {
+            const u = list.find((x) => x.id === from.id);
+            if (!u) return { user: existing, isNew: false };
+            u.username = username;
+            u.firstName = firstName;
+            u.blocked = false; // yozayotgan bo'lsa — bloklamagan
+            return { user: u, isNew: false };
+        });
+    }
+    return updateFile('users.json', (list) => {
+        let user = list.find((u) => u.id === from.id);
+        if (user) return { user, isNew: false };
+        user = {
+            id: from.id,
+            username: from.username || '',
+            firstName: from.first_name || '',
+            lang: null, // birinchi /start da tanlanadi
+            referrals: 0,
+            referredBy: null,
+            blocked: false,
+            joinedAt: new Date().toISOString(),
+        };
+        list.push(user);
+        return { user, isNew: true };
     });
 }
 
@@ -133,6 +164,17 @@ function setUserLang(id, lang) {
         const u = users.find((x) => x.id === id);
         if (u) u.lang = lang;
         return u;
+    });
+}
+
+// Broadcast'da botni bloklagan (403) userlarni belgilash
+function markBlocked(ids) {
+    if (!ids || !ids.length) return Promise.resolve();
+    const set = new Set(ids);
+    return updateFile('users.json', (users) => {
+        for (const u of users) {
+            if (set.has(u.id)) u.blocked = true;
+        }
     });
 }
 
@@ -174,6 +216,15 @@ function setOrderStatus(id, status) {
     });
 }
 
+// Bajarilgan buyurtmaga user bahosi (1-5)
+function setOrderRating(id, rating) {
+    return updateFile('orders.json', (orders) => {
+        const o = orders.find((x) => x.id === id);
+        if (o) o.rating = rating;
+        return o || null;
+    });
+}
+
 /* ===== PAYMENTS (stars/premium/gift to'lovlari) ===== */
 const getPayments = () => readFile('payments.json');
 
@@ -202,11 +253,13 @@ module.exports = {
     getUser,
     upsertUser,
     setUserLang,
+    markBlocked,
     applyReferral,
     getOrders,
     getUserOrders,
     addOrder,
     setOrderStatus,
+    setOrderRating,
     getPayments,
     addPayment,
     setPaymentStatus,
