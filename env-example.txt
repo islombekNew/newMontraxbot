@@ -1,0 +1,6 @@
+BOT_TOKEN=123456:AAExample-BotFather-dan-olingan-token
+ADMIN_IDS=123456789,987654321
+GEMINI_API_KEY=
+
+# Neon (yoki boshqa) PostgreSQL ulanish havolasi — barcha ma'lumotlar shu yerda saqlanadi
+DATABASE_URL=postgresql://user:password@host/dbname?sslmode=require

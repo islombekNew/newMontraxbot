@@ -176,11 +176,22 @@ function scheduleDailyReport() {
 scheduleDailyReport();
 
 /* ===== Ishga tushirish ===== */
-// Eski webhook va yig'ilib qolgan update'larni tozalab (xavfsizlik),
-// faqat shu jarayon polling qilishini ta'minlaymiz
-bot.launch({ dropPendingUpdates: true }, () =>
-    console.log('✅ MONTRAX bot ishga tushdi!')
-);
+// Avval Postgres sxemasini tayyorlaymiz va saqlangan holatni tiklaymiz,
+// keyingina botni ishga tushiramiz — shunda flow'lar qayta deploy'dan keyin ham davom etadi.
+async function bootstrap() {
+    await db.init();
+    console.log('✅ Postgres (Neon) ulanish tayyor');
+    await state.load();
+    // Eski webhook va yig'ilib qolgan update'larni tozalab (xavfsizlik),
+    // faqat shu jarayon polling qilishini ta'minlaymiz
+    await bot.launch({ dropPendingUpdates: true });
+    console.log('✅ MONTRAX bot ishga tushdi!');
+}
+
+bootstrap().catch((err) => {
+    console.error('❌ Bot ishga tushmadi:', err.message);
+    process.exit(1);
+});
 
 process.once('SIGINT', () => bot.stop('SIGINT'));
 process.once('SIGTERM', () => bot.stop('SIGTERM'));
